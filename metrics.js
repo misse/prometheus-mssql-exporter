@@ -4,7 +4,9 @@
  */
 const debug = require("debug")("metrics");
 const client = require('prom-client');
+const mssql_version = process.env["MSSQL_VERSION"]
 
+console.log(mssql_version)
 // UP metric
 const up = new client.Gauge({name: 'up', help: "UP Status"});
 
@@ -114,40 +116,78 @@ FROM sys.dm_os_performance_counters with (nolock)where counter_name='Page life e
     }
 };
 
-const mssql_io_stall = {
-    metrics: {
-        mssql_io_stall: new client.Gauge({name: 'mssql_io_stall', help: 'Wait time (ms) of stall since last restart', labelNames: ['database', 'type']}),
-        mssql_io_stall_total: new client.Gauge({name: 'mssql_io_stall_total', help: 'Wait time (ms) of stall since last restart', labelNames: ['database']}),
-    },
-    query: `SELECT
+function mssql_iostall_changer(mssql_version) {
+    if (mssql_version == null || mssql_version < 2017) {
+        console.log("mssql_version")
+        var mssql_io_stall = {
+            metrics: {
+                mssql_io_stall: new client.Gauge({ name: 'mssql_io_stall', help: 'Wait time (ms) of stall since last restart', labelNames: ['database', 'type'] }),
+                mssql_io_stall_total: new client.Gauge({ name: 'mssql_io_stall_total', help: 'Wait time (ms) of stall since last restart', labelNames: ['database'] }),
+            },
+            query: `SELECT
+    cast(DB_Name(a.database_id) as varchar) as name,
+        max(io_stall_read_ms),
+        max(io_stall_write_ms),
+        max(io_stall),
+        max(io_stall_queued_read_ms),
+        max(io_stall_queued_write_ms)
+    FROM
+    sys.dm_io_virtual_file_stats(null, null) a
+    INNER JOIN sys.master_files b ON a.database_id = b.database_id and a.file_id = b.file_id
+    group by a.database_id`,
+            collect: function (rows, metrics) {
+                for (let i = 0; i < rows.length; i++) {
+                    const row = rows[i];
+                    const database = row[0].value;
+                    const read = row[1].value;
+                    const write = row[2].value;
+                    const stall = row[3].value;
+                    const queued_read = row[4].value;
+                    const queued_write = row[5].value;
+                    debug("Fetch number of stalls for database", database);
+                    metrics.mssql_io_stall_total.set({ database: database }, stall);
+                    metrics.mssql_io_stall.set({ database: database, type: "read" }, read);
+                    metrics.mssql_io_stall.set({ database: database, type: "write" }, write);
+                    metrics.mssql_io_stall.set({ database: database, type: "queued_read" }, queued_read);
+                    metrics.mssql_io_stall.set({ database: database, type: "queued_write" }, queued_write);
+                }
+            }
+        };
+    } else {console.log(mssql_version)
+    var mssql_io_stall = {
+        metrics: {
+            mssql_io_stall: new client.Gauge({ name: 'mssql_io_stall', help: 'Wait time (ms) of stall since last restart', labelNames: ['database', 'type'] }),
+            mssql_io_stall_total: new client.Gauge({ name: 'mssql_io_stall_total', help: 'Wait time (ms) of stall since last restart', labelNames: ['database'] }),
+        },
+        query: `SELECT
 cast(DB_Name(a.database_id) as varchar) as name,
     max(io_stall_read_ms),
     max(io_stall_write_ms),
-    max(io_stall),
-    max(io_stall_queued_read_ms),
-    max(io_stall_queued_write_ms)
+    max(io_stall)
 FROM
 sys.dm_io_virtual_file_stats(null, null) a
 INNER JOIN sys.master_files b ON a.database_id = b.database_id and a.file_id = b.file_id
 group by a.database_id`,
-    collect: function (rows, metrics) {
-        for (let i = 0; i < rows.length; i++) {
-            const row = rows[i];
-            const database = row[0].value;
-            const read = row[1].value;
-            const write = row[2].value;
-            const stall = row[3].value;
-            const queued_read = row[4].value;
-            const queued_write = row[5].value;
-            debug("Fetch number of stalls for database", database);
-            metrics.mssql_io_stall_total.set({database: database}, stall);
-            metrics.mssql_io_stall.set({database: database, type: "read"}, read);
-            metrics.mssql_io_stall.set({database: database, type: "write"}, write);
-            metrics.mssql_io_stall.set({database: database, type: "queued_read"}, queued_read);
-            metrics.mssql_io_stall.set({database: database, type: "queued_write"}, queued_write);
+        collect: function (rows, metrics) {
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                const database = row[0].value;
+                const read = row[1].value;
+                const write = row[2].value;
+                const stall = row[3].value;
+                debug("Fetch number of stalls for database", database);
+                metrics.mssql_io_stall_total.set({ database: database }, stall);
+                metrics.mssql_io_stall.set({ database: database, type: "read" }, read);
+                metrics.mssql_io_stall.set({ database: database, type: "write" }, write);
+            }
         }
+    };
+
     }
-};
+
+    return mssql_io_stall
+}
+const mssql_io_stall = mssql_iostall_changer(mssql_version);
 
 const mssql_batch_requests = {
     metrics: {
