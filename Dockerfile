@@ -1,5 +1,5 @@
 FROM node:8.4.0-alpine
-MAINTAINER Pierre Awaragi (pierre@awaragi.com)
+MAINTAINER Martin Bergman (martin@devsed.se)
 
 # Create a directory where our app will be placed
 RUN mkdir -p /usr/src/app
